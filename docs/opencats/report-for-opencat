@@ -1,0 +1,126 @@
+# 🐈 OpenCats 项目演进与架构重构报告
+
+**文档状态**: 架构基线 (Baseline) / 演进提案
+**项目代号**: OpenCats (前身: `amazing-fish/cat-cafe-tutorials`)
+**核心愿景**: 构建一个基于长周期运行（Long-Running）、支持结构化多智能体工作流（Workflows），且能够通过 CLI 逆向挂载官方大模型订阅算力的本地生产级协作框架。
+
+## 一、 核心架构思想演进 (基于 Anthropic 实践)
+
+过去的教程侧重于单体 Agent 的 SDK 封装和基础交互。在面临真实的复杂工程时，传统的“无状态单体会话”会迅速遭遇上下文遗忘、死循环和幻觉等问题。OpenCats 将引入以下两大前沿工程范式重构底层：
+
+### 1. 引入长效运行脚手架 (Harnesses for Long-Running Agents)
+
+长周期任务不能仅仅依赖大模型的超长 Context Window，而必须将“记忆”下沉到外部状态中。我们将构建一个 **OpenCats Harness (脚手架)**：
+
+* **状态外部化与轮班制**：抛弃无限对话机制。引入 `初始化猫 (Initializer)` 生成任务清单 (`feature_list.json`) 和进度日志 (`progress.md`)；随后的 `打工猫 (Worker)` 每次唤醒时，强制要求先读取进度和 Git Logs，只挑一个特性开发，完成后提交 Git Commit 并休眠交接。将文件系统和版本控制作为“长期记忆”。
+* **人类在环 (Human-in-the-Loop)**：脚手架提供安全沙箱。当猫猫连续报错，或需要执行高风险动作（如删除文件、执行外部脚本）时，Harness 会挂起任务，向前端 `maomaov2` 抛出授权请求，等待人类“铲屎官”审批。
+
+### 2. 实用主义多智能体协作 (Building Multi-Agent Systems)
+
+放弃不可控的“全自由发散式网状”群聊，采用高度可预测的**结构化工作流 (Workflows)**：
+
+* **路由分发 (Routing)**：轻量级前台猫解析 `maomaov2` 传入的用户意图，将代码/逻辑推理任务路由给 GPT-4，将长文本/多模态分析路由给 Gemini。
+* **编排-执行模式 (Orchestrator-Workers)**：“店长猫（大模型）”负责将宏大项目拆解为子任务，分发给平行的“专职打工猫”在隔离的上下文中各自执行，最后统一汇总。
+* **评估-优化模式 (Evaluator-Optimizer)**：“写码猫”产出代码后，强制进入内部对抗回圈，经过“测试监工猫”的代码审查和本地单测，给出 LGTM (Looks Good To Me) 后流程才会继续。
+
+---
+
+## 二、 前后端整合与系统拓扑拓扑 (maomaov2 & CLI Auth)
+
+为了实现“`maomaov2` 调用 CLI 的 Auth 能力链接官方订阅（白嫖 Web 端算力或统一管理凭证）”，我们需要将 OpenCats 演进为 **B/S 架构 + 本地守护进程 (Local Daemon)** 模式。前端彻底轻量化，复杂逻辑全部下沉到 CLI。
+
+### 2.1 拓扑架构设计
+
+```text
+┌───────────────────────────────────────────────────────────────┐
+│                   OpenCats Web (maomaov2)                     │
+│ (纯视觉看板：聊天 UI、工作流状态可视化、拦截/确认人工审批)    │
+└──────────────┬───────────────────────────────┬────────────────┘
+               │ Local HTTP / WebSocket (SSE)  │
+┌──────────────▼───────────────────────────────▼────────────────┐
+│             OpenCats CLI Daemon (本地后台守护进程)            │
+│ ├─ Auth Provider (接管/保活 GPT & Gemini 官方 Web Token)      │
+│ ├─ API Gateway   (协议转化，暴露标准化本地 API 给前端)        │
+│ └─ Agent Harness (驱动事件循环、执行沙箱代码、Git 操作拦截)   │
+└──────────────┬───────────────────────────────┬────────────────┘
+               │                               │
+┌──────────────▼─────────────┐   ┌─────────────▼────────────────┐
+│     GPT 官方订阅逆向通道   │   │   Gemini 官方订阅逆向通道    │
+└────────────────────────────┘   └──────────────────────────────┘
+
+```
+
+### 2.2 鉴权打通的核心链路
+
+1. **统一凭证纳管 (`opencats auth`)**：开发 CLI 命令（如 `opencats auth login --provider gpt`），通过无头浏览器 (Playwright/Puppeteer) 提取或由用户手动导入官方网页版 ChatGPT Plus / Gemini Advanced 的 Session Cookie。
+2. **本地代理网关 (`opencats serve`)**：CLI 作为本地服务端启动（如 `localhost:3939`），将官方 Web 接口的非标准通信流劫持，向上封装为兼容 OpenAI 格式的标准流式 API。同时静默处理 Token 刷新、风控绕过。
+3. **前端无感调用**：`maomaov2` 的 BaseURL 直接指向本地 CLI。前端不再处理任何秘钥，只需专注于渲染对话和底层“猫猫工作流”的状态事件。
+
+---
+
+## 三、 工程目录演进结构 (Monorepo 划分)
+
+建议将当前的零散文件重构为标准 Monorepo 结构，旧资产平滑归档：
+
+```text
+opencats/
+├── docs/
+│   ├── archive/                  # 👈 原 cat-cafe-tutorials 的 lessons 归档至此
+│   └── adr/                      # 👈 存放新的架构决策记录 (Architecture Decision Records)
+├── packages/
+│   ├── cli/                      # 👈 核心枢纽：包含 opencats auth 与 API Proxy Gateway
+│   ├── core/                     # 👈 核心引擎：Agent Harness、状态机、Git 追踪、多猫路由
+│   └── web/                      # 👈 原 maomaov2.html 演进，升级为前端交互工程 (Vue/React)
+└── README.md
+
+```
+
+---
+
+## 四、 阶段性演进路线图 (Roadmap)
+
+为了稳步推进项目更新，建议分三个里程碑执行：
+
+### Phase 1: 破茧 (基础设施与供电网络闭环)
+
+* **目标**：跑通 `maomaov2` ➡️ CLI 代理网关 ➡️ GPT/Gemini 官方模型 的基础单向聊天。
+* **核心交付件**：
+1. CLI 的 `Auth` 模块骨架与本地 HTTP Server。
+2. 重构 `maomaov2` 网络请求层，剥离 Mock，对接到本地 CLI 服务。
+
+
+
+### Phase 2: 筑巢 (长效挂载引擎落地)
+
+* **目标**：实现 Anthropic 论文中的长周期防遗忘机制。
+* **核心交付件**：
+1. 开发 `opencats-core` 引擎，支持基于本地文件系统读写和自动 Git Commit 的长效记忆机制。
+2. 前端 `maomaov2` 新增“任务看板”，通过 WebSocket 实时监听渲染 CLI 发送的交接日志。
+
+
+
+### Phase 3: 群猫共舞 (多猫协作工作流闭环)
+
+* **目标**：实现 Evaluator-Optimizer 和 Orchestrator-Worker 模式。
+* **核心交付件**：
+1. 实现跨模型协作总线，支持 GPT 和 Gemini 同时受控运转（例如 GPT 写代码，Gemini 负责审查）。
+2. `maomaov2` 上线“多猫协同链路拓扑图”与审批阻断 UI。
+
+
+
+---
+
+## 💡 下一步推动项目更新的建议行动 (Action Items)
+
+作为项目的推动者，建议您优先创建并提交以下 **首批基建交付件**（您可以直接指示我为您编写这些代码）：
+
+1. **`docs/adr/002-cli-auth-and-local-daemon.md`**
+* **作用**：架构决策文档。明确将 CLI 升级为本地守护进程的原因，以及劫持 GPT/Gemini 官方 Web Token 的技术选型与安全设计方案。
+
+
+2. **`packages/cli/src/auth_provider.ts (或 .py)`**
+* **作用**：CLI 的鉴权模块核心骨架，预留接入大模型 Web 版 Session 抓取和验证的接口 (`login()`, `getValidToken()`)。
+
+
+3. **`docs/api/maomaov2-cli-bridge.yaml`**
+* **作用**：定义 `maomaov2` 与本地 CLI 守护进程之间的通信契约。包括如何查询 Auth 状态、如何发起对话请求、如何通过 SSE (Server-Sent Events) 获取后台猫猫的实时工作流事件（如：*“前端猫正在生成代码”、“测试猫打回了代码，正在重试...”*）。
