@@ -40,6 +40,14 @@
 - 想看真实项目演进过程的人
 - 想避开我们踩过的坑的人
 
+
+## OpenCats 项目化交付
+
+已新增面向工程重构的交付件（用于从教程过渡到可运行项目）：
+- [OpenCats Anchor 文档](./docs/opencats/ANCHOR.md)
+- [OpenCats 项目演进报告](./docs/opencats/PROJECT_EVOLUTION_REPORT.md)
+- [OpenCats 变更日志](./docs/opencats/CHANGELOG.md)
+
 ## 项目状态
 
 - 教程：公开（你正在看的）
